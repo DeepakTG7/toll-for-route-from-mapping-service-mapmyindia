@@ -1,103 +1,63 @@
-# Importing modules
 import json
 import requests
 import os
+import logging
 
-MAPMYINDIA_API_KEY = os.environ.get("MAPMYINDIA_API_KEY")
-MAPMYINDIA_API_URL = "https://apis.mapmyindia.com/advancedmaps/v1"
+# Setup basic logging
+logging.basicConfig(level=logging.INFO)
 
-TOLLGURU_API_KEY = os.environ.get("TOLLGURU_API_KEY")
-TOLLGURU_API_URL = "https://apis.tollguru.com/toll/v2"
-POLYLINE_ENDPOINT = "complete-polyline-from-mapping-service"
+class RouteAPI:
+    """Class to handle interactions with MapmyIndia and TollGuru APIs."""
 
-# New Delhi
-source_longitude, source_latitude = (
-    77.18609677688849,
-    28.68932119156764,
-)
+    def __init__(self):
+        self.mapmyindia_api_key = os.getenv("MAPMYINDIA_API_KEY")
+        self.mapmyindia_api_url = "https://apis.mapmyindia.com/advancedmaps/v1"
+        self.tollguru_api_key = os.getenv("TOLLGURU_API_KEY")
+        self.tollguru_api_url = "https://apis.tollguru.com/toll/v2"
+        self.polyline_endpoint = "complete-polyline-from-mapping-service"
 
-# Mumbai
-destination_longitude, destination_latitude = (
-    72.89902799500808,
-    19.09258017366498,
-)
+    def get_polyline_from_mapmyindia(self, source, destination):
+        """Extrating Polyline from MapmyIndia"""
+        url = f"{self.mapmyindia_api_url}/{{self.mapmyindia_api_key}}/route_adv/driving/{source[0]},{source[1]};{destination[0]},{destination[1]}?geometries=polyline&overview=full"
+        response = requests.get(url).json()
+        if 'message' in response:
+            raise Exception(f"{response.get('code')}: {response.get('message')}")
+        elif 'responsecode' in response and response['responsecode'] == "401":
+            raise Exception(f"{response.get('error_code')} {response.get('error_description')}")
+        return response["routes"][0]["geometry"]
 
-# Explore https://tollguru.com/toll-api-docs to get best of all the parameter that tollguru has to offer
-request_parameters = {
-    "vehicle": {
-        "type": "2AxlesAuto",
-    },
-    # Visit https://en.wikipedia.org/wiki/Unix_time to know the time format
-    "departure_time": "2021-01-05T09:46:08Z",
-}
+    def get_rates_from_tollguru(self, polyline):
+        """Calling TollGuru API"""
+        url = f"{self.tollguru_api_url}/{self.polyline_endpoint}"
+        headers = {"Content-type": "application/json", "x-api-key": self.tollguru_api_key}
+        params = {
+            "vehicle": {"type": "2AxlesAuto"},
+            "departure_time": "2021-01-05T09:46:08Z",
+            "source": "mapmyindia",
+            "polyline": polyline
+        }
+        response = requests.post(url, json=params, headers=headers).json()
+        if 'message' in response:
+            raise Exception(response['message'])
+        return response["route"]["costs"]
 
-def get_polyline_from_mapmyindia(
-    source_longitude, source_latitude, destination_longitude, destination_latitude
-):
-    """Extrating Polyline from MapmyIndia"""
+def main():
+    route_api = RouteAPI()
+    source = (77.18609677688849, 28.68932119156764)  # New Delhi
+    destination = (72.89902799500808, 19.09258017366498)  # Mumbai
+    
+    try:
+        # Step 1: Get polyline from MapmyIndia
+        polyline = route_api.get_polyline_from_mapmyindia(source, destination)
+        # Step 2: Get rates from TollGuru API
+        rates = route_api.get_rates_from_tollguru(polyline)
+        # Step 3: Print the rates
+        if rates:
+            logging.info(f"The rates are \n {rates}")
+        else:
+            logging.info("The route doesn't have tolls")
+    except Exception as e:
+        logging.error(f"Error: {e}")
 
-    # Query MapmyIndia with Key and Source-Destination coordinates
-    url = "{a}/{b}/route_adv/driving/{c},{d};{e},{f}?geometries=polyline&overview=full".format(
-        b=MAPMYINDIA_API_KEY,
-        c=source_longitude,
-        d=source_latitude,
-        e=destination_longitude,
-        f=destination_latitude,
-    )
-    # Converting the response to JSON
-    response = requests.get(url).json()
-    # Checking for errors in response
-    if str(response).find("message") > -1:
-        raise Exception(
-            "{}: {} , check latitude,longitude perhaps".format(
-                response["code"], response["message"]
-            )
-        )
-    elif str(response).find("responsecode") > -1 and response["responsecode"] == "401":
-        raise Exception(
-            "{} {}".format(response["error_code"], response["error_description"])
-        )
-    else:
-        # Extracting polyline
-        polyline_from_mapmyindia = response["routes"][0]["geometry"]
-        return polyline_from_mapmyindia
-
-
-def get_rates_from_tollguru(polyline):
-    """Calling Tollguru API"""
-
-    # TollGuru query URL
-    Tolls_URL = f"{TOLLGURU_API_URL}/{POLYLINE_ENDPOINT}"
-    # TollGuru request parameters
-    headers = {"Content-type": "application/json", "x-api-key": TOLLGURU_API_KEY}
-    params = {
-        **request_parameters,
-        "source": "mapmyindia",
-        "polyline": polyline,  #  this is polyline that we fetched from the mapping service
-    }
-
-    # Requesting TollGuru with parameters
-    response_tollguru = requests.post(Tolls_URL, json=params, headers=headers).json()
-    # Checking for errors or printing rates
-    if str(response_tollguru).find("message") == -1:
-        return response_tollguru["route"]["costs"]
-    else:
-        raise Exception(response_tollguru["message"])
-
-
-"""Program Starts"""
-# Step 1 : Get polyline from MapmyIndia
-polyline_from_mapmyindia = get_polyline_from_mapmyindia(
-    source_longitude, source_latitude, destination_longitude, destination_latitude
-)
-
-# Step 2 : Get rates from TollGuru API
-rates_from_tollguru = get_rates_from_tollguru(polyline_from_mapmyindia)
-
-# Step 3 : Print the rates of all the available modes of payment
-if rates_from_tollguru == {}:
-    print("The route doesn't have tolls")
-else:
-    print(f"The rates are \n {rates_from_tollguru}")
-
-"""Program Ends"""
+if __name__ == "__main__":
+    main()
